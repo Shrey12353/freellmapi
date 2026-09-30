@@ -1,4 +1,5 @@
 import express from 'express';
+import type { Request, Response } from 'express';
 import compression from 'compression';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -124,10 +125,20 @@ export function createApp(config?: Config) {
   // plain-HTTP LAN origin the browser discards them and logs a console error
   // instead (#734). They are re-added per request whenever the origin is one
   // the browser trusts — HTTPS, or loopback, which covers desktop/localhost.
+
+  // The Hub's Jarvis page (/hub/jarvis) embeds Jarvis's own UI in an iframe. Jarvis
+  // listens on its own local port, so the frame is a different origin, and a
+  // bare default-src 'self' blocks it (frame-src falls back to default-src
+  // when unset) — the tab then renders as an empty frame. Name that origin
+  // explicitly; JARVIS_UI_URL overrides it.
+  const jarvisUiOrigin = process.env.JARVIS_UI_URL || 'http://localhost:3777';
+
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
+        // Hub → Jarvis UI embed (see jarvisUiOrigin above).
+        frameSrc: ["'self'", jarvisUiOrigin],
         // index.html carries one inline <script>: the theme/direction bootstrap
         // that has to run before first paint, or every dark-mode user gets a
         // white flash. 'self' alone blocks it on every install, HTTPS included,
@@ -323,6 +334,39 @@ export function createApp(config?: Config) {
   // instead of index.html.
   app.use(statusRouter);
 
+  // ── MyAI-Agent hub ──────────────────────────────────────────────────────
+  // Serves Shrey's local hub — now Jarvis-only — inside the gateway. Jarvis
+  // keeps its own UI server on a separate port and is embedded here.
+  // Root overridable with MYAI_AGENT_ROOT.
+  //
+  // Everything lives under /hub. It used to squat on /models/chat, which is the
+  // dashboard's own namespace (client/src/App.tsx routes /models/chat/:id,
+  // /models/fusion, /models/image, …). Sitting there shadowed those dashboard
+  // pages, so the hub owns a prefix of its own and /models belongs to the
+  // dashboard again.
+  const agentRoot = process.env.MYAI_AGENT_ROOT || 'C:/Users/shrey/Downloads/MyAI-Agent';
+  // A miss under /hub/* is a plain 404. The mounts previously used
+  // fallthrough:false, which routed a miss through the error handler and
+  // echoed the absolute server path (and the filesystem layout) to the browser.
+  const hubNotFound = (_req: Request, res: Response) => res.status(404).type('text/plain').send('Not found');
+  // The hub is Jarvis-only: /hub and /hub/jarvis both open the Jarvis shell,
+  // which embeds Jarvis's own UI. The agent chat that used to live here (with
+  // its /hub/api/agent proxy and /hub/media mount) has been removed — the
+  // standalone agent server on :3000 still exposes it for its own use.
+  const jarvisPage = (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(path.join(agentRoot, 'public', 'jarvis.html'));
+  };
+  app.get('/hub', jarvisPage);
+  app.get('/hub/jarvis', jarvisPage);
+  // The embedded Jarvis viewer's frame-probe script. Lives in a file (not
+  // inline) so it survives the CSP's script-src 'self'.
+  app.get('/hub/jarvis/frame.js', (_req, res) => {
+    res.type('application/javascript');
+    res.sendFile(path.join(agentRoot, 'public', 'jarvis-frame.js'));
+  });
+  app.use('/hub', hubNotFound);
+
   // Error handler (for API routes)
   app.use(errorHandler);
 
@@ -359,6 +403,9 @@ export function createApp(config?: Config) {
     }));
     // SPA fallback — serve index.html for non-API routes
     app.use((req, res, next) => {
+      // /models/* still falls through to the SPA: it is the dashboard's own
+      // route namespace (/models/fusion, /models/image, …), so carving it out
+      // here would 404 those deep links.
       if (req.path.startsWith('/api/') || req.path.startsWith('/v1/') || req.path.startsWith('/v1beta/')) {
         next();
         return;

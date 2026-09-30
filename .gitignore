@@ -23,5 +23,10 @@ server/data/
 deploy-pi.sh
 update-hermes.sh
 
+# Local gateway config written by the dashboard: holds provider API keys and
+# the admin password in PLAIN TEXT. Must never be published.
+freellmapi.config.json
+*.config.local.json
+
 # Monetization planning — private, never committed
 monetization/
