@@ -76,6 +76,36 @@ describe('CSP security headers', () => {
   });
 });
 
+// The Hub's Jarvis tab iframes Jarvis's own UI, which runs on a different
+// local port (different origin). frame-src falls back to default-src when it is
+// not declared, so without an explicit frame-src the tab rendered as a blank
+// frame and the browser refused to load http://localhost:3777/.
+describe('CSP frame-src for the embedded Jarvis UI', () => {
+  afterAll(() => {
+    delete process.env.JARVIS_UI_URL;
+  });
+
+  it('allows framing the default Jarvis UI origin', async () => {
+    process.env.ENCRYPTION_KEY = '0'.repeat(64);
+    initDb(':memory:');
+    const app = createApp();
+    const csp = (await getHeaders(app, '/hub/jarvis')).get('content-security-policy')!;
+    expect(csp).toContain('frame-src');
+    expect(csp).toContain('http://localhost:3777');
+    expect(csp).toContain("default-src 'self'");
+  });
+
+  it('honours JARVIS_UI_URL', async () => {
+    process.env.JARVIS_UI_URL = 'http://localhost:4999';
+    process.env.ENCRYPTION_KEY = '0'.repeat(64);
+    initDb(':memory:');
+    const app = createApp(loadConfig());
+    const csp = (await getHeaders(app, '/hub/jarvis')).get('content-security-policy')!;
+    expect(csp).toContain('http://localhost:4999');
+    expect(csp).not.toContain('http://localhost:3777');
+  });
+});
+
 // #682: upgrade-insecure-requests broke plain-HTTP LAN installs because the
 // browser rewrites /assets/* to https:// on an origin with no TLS. The directive
 // is now gated by request protocol + the CSP_UPGRADE_INSECURE_REQUESTS env.
